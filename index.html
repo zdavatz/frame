@@ -2,7 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimal-ui">
 <!-- Vom Home-Bildschirm des iPad als eigene App ohne Safari-Leisten -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -12,109 +12,154 @@
 <meta name="robots" content="noindex">
 <title>Frame</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none;
-               -webkit-user-select: none; user-select: none; }
-  img { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain;
-        opacity: 0; transition: opacity 1s ease-in-out; }
-  img.sichtbar { opacity: 1; }
-  #meldung { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-             color: #888; font: 18px -apple-system, sans-serif; text-align: center; padding: 2em; }
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; overflow: hidden;
+               cursor: none; -webkit-user-select: none; user-select: none; }
+  /* Bilder als Hintergrund: «contain» läuft auch auf iOS 9 (object-fit erst ab iOS 10) */
+  .bild { position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%;
+          background: #000 no-repeat center center; -webkit-background-size: contain; background-size: contain;
+          opacity: 0; -webkit-transition: opacity 1s ease-in-out; transition: opacity 1s ease-in-out; }
+  .bild.sichtbar { opacity: 1; }
+  #meldung { position: fixed; top: 40%; left: 0; right: 0; color: #888; text-align: center;
+             font: 18px -apple-system, Helvetica, sans-serif; padding: 0 2em; }
 </style>
 </head>
 <body>
-<img id="a" alt=""><img id="b" alt="">
+<div class="bild" id="a"></div><div class="bild" id="b"></div>
 <div id="meldung">Bilder werden geladen …</div>
 <script>
 // Diaschau: alle 3 Sekunden ein Bild aus dem Drive-Ordner «Frame_1».
 // Die Bilder liefert eine Apps-Script-Web-App; ihre Bereitstellungs-ID steht
-// nicht in dieser Seite, sondern hinter dem # in der Adresse:
+// nicht in dieser Seite, sondern hinter dem # (oder als ?k=) in der Adresse:
 //   https://zdavatz.github.io/frame/#<Bereitstellungs-ID>
-// So enthält das öffentliche Repository keinen Zugang zu den Bildern.
+// Bewusst altes JavaScript (ES5) und JSONP über Skript-Tags: so läuft es auch
+// auf einem alten iPad mit iOS 9 (kein fetch, Mühe mit CORS-Umleitungen).
 var WECHSEL = 3000;
 var LISTE_NEU = 10 * 60000;
-var id_app = location.hash.replace(/^#/, '').trim();
-var API = 'https://script.google.com/macros/s/' + id_app + '/exec';
-var ids = [], pos = -1, vorrat = {}, oben = 'a';
+var ZEITLIMIT = 30000;
+
+function kennung() {
+  var h = location.hash.replace(/^#/, '');
+  if (h) return h;
+  var m = /[?&]k=([^&]+)/.exec(location.search);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+var API = 'https://script.google.com/macros/s/' + kennung() + '/exec';
+var ids = [], pos = -1, vorrat = {}, oben = 'a', zaehler = 0;
 
 function meldung(t) {
   var m = document.getElementById('meldung');
-  m.textContent = t || '';
-  m.style.display = t ? 'flex' : 'none';
+  m.innerHTML = '';
+  m.appendChild(document.createTextNode(t || ''));
+  m.style.display = t ? 'block' : 'none';
 }
+window.onerror = function (msg) { meldung('Fehler: ' + msg); };
 
-function abrufen(param) {
-  return fetch(API + '?' + param).then(function (r) { return r.json(); }).then(function (j) {
-    if (j.fehler) throw new Error(j.fehler);
-    return j;
-  });
-}
-
-function holen(id) {
-  if (!vorrat[id]) {
-    vorrat[id] = abrufen('bild=' + encodeURIComponent(id)).then(function (j) { return j.url; });
+// JSONP: ein Skript-Tag, Google leitet um, die Antwort ruft den Rückruf auf.
+function abrufen(param, ok, fehler) {
+  var name = 'rf' + (++zaehler) + '_' + new Date().getTime();
+  var s = document.createElement('script');
+  var fertig = false;
+  var uhr = setTimeout(function () { ende(); fehler('Zeitüberschreitung'); }, ZEITLIMIT);
+  function ende() {
+    fertig = true;
+    clearTimeout(uhr);
+    try { delete window[name]; } catch (e) { window[name] = undefined; }
+    if (s.parentNode) s.parentNode.removeChild(s);
   }
+  window[name] = function (j) {
+    if (fertig) return;
+    ende();
+    if (j && j.fehler) fehler(j.fehler); else ok(j);
+  };
+  s.onerror = function () { if (!fertig) { ende(); fehler('nicht erreichbar'); } };
+  s.src = API + '?' + param + '&cb=' + name;
+  document.body.appendChild(s);
+}
+
+// Vorrat: je Bild-ID die data-URL, sobald geladen, oder die wartenden Rückrufe.
+function holen(id, fertig) {
+  var v = vorrat[id];
+  if (v && v.url) { if (fertig) fertig(v.url); return; }
+  if (v) { if (fertig) v.warten.push(fertig); return; }
+  v = vorrat[id] = { url: null, warten: fertig ? [fertig] : [] };
+  abrufen('bild=' + encodeURIComponent(id), function (j) {
+    v.url = j.url;
+    var w = v.warten; v.warten = [];
+    for (var i = 0; i < w.length; i++) w[i](j.url);
+  }, function () {
+    delete vorrat[id];
+    var w = v.warten; v.warten = [];
+    for (var i = 0; i < w.length; i++) w[i](null);
+  });
+  aufraeumen();
+}
+
+// Nur das aktuelle und die nächsten zwei Bilder im Speicher (alte iPads haben wenig).
+function aufraeumen() {
   var behalten = {};
-  for (var k = 0; k < 3 && ids.length; k++) behalten[ids[(pos + k + 1) % ids.length]] = 1;
-  behalten[id] = 1;
-  Object.keys(vorrat).forEach(function (x) { if (!behalten[x]) delete vorrat[x]; });
-  return vorrat[id];
+  for (var k = 0; k < 3 && ids.length; k++) behalten[ids[(pos + k + ids.length) % ids.length]] = 1;
+  for (var x in vorrat) if (vorrat.hasOwnProperty(x) && !behalten[x] && !vorrat[x].warten.length) delete vorrat[x];
+}
+
+function zeigen(url) {
+  var unten = oben === 'a' ? 'b' : 'a';
+  var el = document.getElementById(unten);
+  var vorlader = new Image();
+  vorlader.onload = function () {
+    el.style.backgroundImage = 'url("' + url + '")';
+    el.className = 'bild sichtbar';
+    document.getElementById(oben).className = 'bild';
+    oben = unten;
+    meldung('');
+  };
+  vorlader.src = url;
 }
 
 function weiter() {
   if (!ids.length) { setTimeout(weiter, WECHSEL); return; }
   pos = (pos + 1) % ids.length;
-  var id = ids[pos], start = Date.now();
-  holen(id).then(function (url) {
-    var unten = oben === 'a' ? 'b' : 'a';
-    var img = document.getElementById(unten);
-    img.onload = function () {
-      img.classList.add('sichtbar');
-      document.getElementById(oben).classList.remove('sichtbar');
-      oben = unten;
-      meldung('');
-    };
-    img.src = url;
-    holen(ids[(pos + 1) % ids.length]);
-    setTimeout(weiter, Math.max(0, WECHSEL - (Date.now() - start)));
-  }, function () {
-    delete vorrat[id];
-    setTimeout(weiter, 1000);
+  var start = new Date().getTime();
+  holen(ids[pos], function (url) {
+    if (url) zeigen(url);
+    if (ids.length) holen(ids[(pos + 1) % ids.length]);   // nächstes vorladen
+    var rest = WECHSEL - (new Date().getTime() - start);
+    setTimeout(weiter, url ? Math.max(0, rest) : 1000);
   });
 }
 
 function liste_laden(erstes) {
-  abrufen('liste=1').then(function (j) {
+  abrufen('liste=1', function (j) {
     ids = j.ids || [];
     if (!ids.length) meldung('Noch keine Bilder im Ordner «Frame_1».');
     if (pos >= ids.length) pos = -1;
     if (erstes) weiter();
   }, function (e) {
-    meldung('Bilder nicht erreichbar: ' + e.message);
+    meldung('Bilder nicht erreichbar (' + e + ') – neuer Versuch in 10 Sekunden');
     if (erstes) setTimeout(function () { liste_laden(true); }, 10000);
   });
 }
 
-// Bildschirm wach halten (Safari ab iPadOS 16.4), nach dem Zurückkehren neu.
-var sperre = null;
+// Bildschirm wach halten, wo der Browser es kann (nicht auf iOS 9 – dort
+// Einstellungen → Allgemein → Automatische Sperre → Nie).
 function wach() {
-  if ('wakeLock' in navigator && document.visibilityState === 'visible') {
-    navigator.wakeLock.request('screen').then(function (s) { sperre = s; }).catch(function () {});
+  if (navigator.wakeLock && document.visibilityState === 'visible') {
+    navigator.wakeLock.request('screen')['catch'](function () {});
   }
 }
 document.addEventListener('visibilitychange', wach);
 
-// Tippen oder Taste «f»: Vollbild im Browser (am Mac/PC; am iPad über den Home-Bildschirm).
+// Tippen oder Taste «f»: Vollbild im Browser (Mac/PC; am iPad über den Home-Bildschirm).
 function vollbild() {
   var d = document.documentElement;
   var an = document.fullscreenElement || document.webkitFullscreenElement;
-  if (!an) (d.requestFullscreen || d.webkitRequestFullscreen || function () {}).call(d);
-  else (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  if (!an) { if (d.requestFullscreen) d.requestFullscreen(); else if (d.webkitRequestFullscreen) d.webkitRequestFullscreen(); }
+  else { if (document.exitFullscreen) document.exitFullscreen(); else if (document.webkitExitFullscreen) document.webkitExitFullscreen(); }
   wach();
 }
 document.addEventListener('click', vollbild);
-document.addEventListener('keydown', function (e) { if (e.key === 'f') vollbild(); });
+document.addEventListener('keydown', function (e) { if (e.key === 'f' || e.keyCode === 70) vollbild(); });
 
-if (!id_app) {
+if (!kennung()) {
   meldung('Adresse unvollständig: die Kennung nach # fehlt.');
 } else {
   wach();
