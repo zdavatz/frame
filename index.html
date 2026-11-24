@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Vom Home-Bildschirm des iPad als eigene App ohne Safari-Leisten -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Frame">
+<meta name="theme-color" content="#000000">
+<meta name="robots" content="noindex">
+<title>Frame</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none;
+               -webkit-user-select: none; user-select: none; }
+  img { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: contain;
+        opacity: 0; transition: opacity 1s ease-in-out; }
+  img.sichtbar { opacity: 1; }
+  #meldung { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+             color: #888; font: 18px -apple-system, sans-serif; text-align: center; padding: 2em; }
+</style>
+</head>
+<body>
+<img id="a" alt=""><img id="b" alt="">
+<div id="meldung">Bilder werden geladen …</div>
+<script>
+// Diaschau: alle 3 Sekunden ein Bild aus dem Drive-Ordner «Frame_1».
+// Die Bilder liefert eine Apps-Script-Web-App; ihre Bereitstellungs-ID steht
+// nicht in dieser Seite, sondern hinter dem # in der Adresse:
+//   https://zdavatz.github.io/frame/#<Bereitstellungs-ID>
+// So enthält das öffentliche Repository keinen Zugang zu den Bildern.
+var WECHSEL = 3000;
+var LISTE_NEU = 10 * 60000;
+var id_app = location.hash.replace(/^#/, '').trim();
+var API = 'https://script.google.com/macros/s/' + id_app + '/exec';
+var ids = [], pos = -1, vorrat = {}, oben = 'a';
+
+function meldung(t) {
+  var m = document.getElementById('meldung');
+  m.textContent = t || '';
+  m.style.display = t ? 'flex' : 'none';
+}
+
+function abrufen(param) {
+  return fetch(API + '?' + param).then(function (r) { return r.json(); }).then(function (j) {
+    if (j.fehler) throw new Error(j.fehler);
+    return j;
+  });
+}
+
+function holen(id) {
+  if (!vorrat[id]) {
+    vorrat[id] = abrufen('bild=' + encodeURIComponent(id)).then(function (j) { return j.url; });
+  }
+  var behalten = {};
+  for (var k = 0; k < 3 && ids.length; k++) behalten[ids[(pos + k + 1) % ids.length]] = 1;
+  behalten[id] = 1;
+  Object.keys(vorrat).forEach(function (x) { if (!behalten[x]) delete vorrat[x]; });
+  return vorrat[id];
+}
+
+function weiter() {
+  if (!ids.length) { setTimeout(weiter, WECHSEL); return; }
+  pos = (pos + 1) % ids.length;
+  var id = ids[pos], start = Date.now();
+  holen(id).then(function (url) {
+    var unten = oben === 'a' ? 'b' : 'a';
+    var img = document.getElementById(unten);
+    img.onload = function () {
+      img.classList.add('sichtbar');
+      document.getElementById(oben).classList.remove('sichtbar');
+      oben = unten;
+      meldung('');
+    };
+    img.src = url;
+    holen(ids[(pos + 1) % ids.length]);
+    setTimeout(weiter, Math.max(0, WECHSEL - (Date.now() - start)));
+  }, function () {
+    delete vorrat[id];
+    setTimeout(weiter, 1000);
+  });
+}
+
+function liste_laden(erstes) {
+  abrufen('liste=1').then(function (j) {
+    ids = j.ids || [];
+    if (!ids.length) meldung('Noch keine Bilder im Ordner «Frame_1».');
+    if (pos >= ids.length) pos = -1;
+    if (erstes) weiter();
+  }, function (e) {
+    meldung('Bilder nicht erreichbar: ' + e.message);
+    if (erstes) setTimeout(function () { liste_laden(true); }, 10000);
+  });
+}
+
+// Bildschirm wach halten (Safari ab iPadOS 16.4), nach dem Zurückkehren neu.
+var sperre = null;
+function wach() {
+  if ('wakeLock' in navigator && document.visibilityState === 'visible') {
+    navigator.wakeLock.request('screen').then(function (s) { sperre = s; }).catch(function () {});
+  }
+}
+document.addEventListener('visibilitychange', wach);
+
+// Tippen oder Taste «f»: Vollbild im Browser (am Mac/PC; am iPad über den Home-Bildschirm).
+function vollbild() {
+  var d = document.documentElement;
+  var an = document.fullscreenElement || document.webkitFullscreenElement;
+  if (!an) (d.requestFullscreen || d.webkitRequestFullscreen || function () {}).call(d);
+  else (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  wach();
+}
+document.addEventListener('click', vollbild);
+document.addEventListener('keydown', function (e) { if (e.key === 'f') vollbild(); });
+
+if (!id_app) {
+  meldung('Adresse unvollständig: die Kennung nach # fehlt.');
+} else {
+  wach();
+  liste_laden(true);
+  setInterval(function () { liste_laden(false); }, LISTE_NEU);
+}
+</script>
+</body>
+</html>
